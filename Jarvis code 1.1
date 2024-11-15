@@ -1,0 +1,170 @@
+import cv2
+import numpy as np
+import speech_recognition as sr
+import tkinter as tk
+import openai
+import threading
+import os
+from tkinter import messagebox
+
+# Initialize the recognizer for speech
+recognizer = sr.Recognizer()
+
+# Set OpenAI API key
+openai.api_key = os.getenv("OPENAI_API_KEY")  # Ensure you have your key in your environment variables
+
+# Global variables
+unit = "cm"  # Default unit (Centimeters)
+depth_frame = None  # Placeholder for depth frame
+video_frame = None  # Placeholder for video frame
+
+# Function to listen for voice commands
+def listen_for_commands():
+    with sr.Microphone() as source:
+        recognizer.adjust_for_ambient_noise(source)
+        print("Listening for 'Hey Jarvis'...")
+
+        while True:
+            audio = recognizer.listen(source)
+            try:
+                command = recognizer.recognize_google(audio).lower()
+                print(f"Command received: {command}")
+                if "hey jarvis" in command:
+                    print("Activated voice control.")
+                    process_voice_command(command)
+            except sr.UnknownValueError:
+                pass
+            except sr.RequestError as e:
+                print(f"Error with speech recognition: {e}")
+
+# Function to process voice commands using OpenAI
+def process_voice_command(command):
+    global unit
+    
+    # Query OpenAI GPT model for handling commands
+    try:
+        response = openai.Completion.create(
+            engine="gpt-4",
+            prompt=f"You are a helpful assistant for a camera-based object measurement system. The current unit is {unit}. The user said: '{command}'. How should I respond or act?",
+            max_tokens=100,
+            temperature=0.5
+        )
+        
+        # Get the assistant's response
+        action = response.choices[0].text.strip().lower()
+        print(f"Assistant's Response: {action}")
+        
+        # Process the response
+        if "change unit" in action:
+            change_unit()
+        elif "measure object" in action:
+            measure_object()
+        elif "show unit options" in action:
+            show_unit_options()
+        else:
+            print("Unrecognized command, please try again.")
+    
+    except Exception as e:
+        print(f"Error processing voice command with OpenAI: {e}")
+
+# Function to change the unit of measurement
+def change_unit():
+    global unit
+    unit = "inches" if unit == "cm" else "cm"  # Toggle between centimeters and inches
+    print(f"Unit changed to {unit}")
+
+# Function to convert measurements
+def convert_measurement(value, from_unit, to_unit):
+    if from_unit == to_unit:
+        return value
+    
+    if from_unit == "cm" and to_unit == "inches":
+        return value / 2.54
+    if from_unit == "inches" and to_unit == "cm":
+        return value * 2.54
+
+# Function to display measurement options (using Tkinter)
+def show_unit_options():
+    window = tk.Tk()
+    window.title("Measurement Units")
+    
+    def on_select(unit_choice):
+        global unit
+        unit = unit_choice
+        window.destroy()
+
+    label = tk.Label(window, text="Choose measurement unit:")
+    label.pack()
+
+    cm_button = tk.Button(window, text="Centimeters", command=lambda: on_select("cm"))
+    cm_button.pack()
+
+    inch_button = tk.Button(window, text="Inches", command=lambda: on_select("inches"))
+    inch_button.pack()
+
+    window.mainloop()
+
+# Function to detect the red corners and measure the object inside the marked area
+def detect_red_corners_and_measure(frame):
+    global depth_frame
+    # Convert to HSV to detect the red marks
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    lower_red = np.array([0, 100, 100])
+    upper_red = np.array([10, 255, 255])
+    mask = cv2.inRange(hsv, lower_red, upper_red)
+    red_corners = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if red_corners:
+        # Assume the red corners outline the area of interest
+        contours = red_corners[0] if len(red_corners) == 2 else red_corners[1]
+        for contour in contours:
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            if len(approx) == 4:
+                # We found the corners, calculate object size within this region
+                (x, y, w, h) = cv2.boundingRect(approx)
+                depth = np.mean(depth_frame[y:y+h, x:x+w])  # Get average depth in the area
+                
+                # Here, you can use depth data to estimate the size of objects
+                # For simplicity, let's assume a basic length calculation
+                size = (w * h) / 1000  # Example calculation in cm
+                print(f"Object size: {convert_measurement(size, 'cm', unit)} {unit}")
+
+                # Draw the rectangle
+                cv2.drawContours(frame, [approx], -1, (0, 255, 0), 3)
+
+# Main function to run the camera and processing loop
+def main():
+    global video_frame, depth_frame
+
+    # Open the camera (replace with actual depth camera setup)
+    cap = cv2.VideoCapture(0)  # Using regular webcam for this example
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame.")
+            break
+        
+        video_frame = frame
+        # Simulate depth frame data (replace with actual depth camera data)
+        depth_frame = np.random.random((frame.shape[0], frame.shape[1])) * 1000  # Random depth for illustration
+
+        detect_red_corners_and_measure(frame)
+        
+        cv2.imshow("Video Feed", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    # Start the listening thread for voice commands
+    voice_thread = threading.Thread(target=listen_for_commands, daemon=True)
+    voice_thread.start()
+
+    # Start the main camera processing loop
+    main()
