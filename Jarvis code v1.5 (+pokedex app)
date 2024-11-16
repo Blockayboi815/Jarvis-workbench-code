@@ -1,0 +1,141 @@
+import cv2
+import numpy as np
+import speech_recognition as sr
+import openai
+import threading
+import os
+import requests
+import tkinter as tk
+from tkinter import messagebox
+
+# Set OpenAI API key
+openai.api_key = os.getenv("OPENAI_API_KEY")  # Ensure you have your key in your environment variables
+
+# WiFi details for Arduino
+ARDUINO_IP = "http://<your_arduino_ip>/command"  # Replace with your Arduino's IP
+
+# Global variables
+unit = "cm"  # Default unit (Centimeters)
+depth_frame = None  # Placeholder for depth frame
+video_frame = None  # Placeholder for video frame
+recognizer = sr.Recognizer()  # Initialize speech recognizer
+
+# Function to send a command to the Arduino via HTTP
+def send_command_to_arduino(command):
+    try:
+        response = requests.get(ARDUINO_IP, params={'command': command})
+        print(f"Arduino Response: {response.text}")
+    except Exception as e:
+        print(f"Error sending command to Arduino: {e}")
+
+# Function to listen for voice commands
+def listen_for_commands():
+    with sr.Microphone() as source:
+        recognizer.adjust_for_ambient_noise(source)
+        print("Listening for voice commands...")
+
+        while True:
+            audio = recognizer.listen(source)
+            try:
+                command = recognizer.recognize_google(audio).lower()
+                print(f"Command received: {command}")
+                if "hey jarvis" in command:
+                    print("Voice control activated.")
+                    process_voice_command(command)
+            except sr.UnknownValueError:
+                pass
+            except sr.RequestError as e:
+                print(f"Speech recognition error: {e}")
+
+# Function to process voice commands using OpenAI
+def process_voice_command(command):
+    global unit
+    
+    try:
+        # Query OpenAI GPT model for handling commands
+        response = openai.Completion.create(
+            engine="gpt-4",
+            prompt=f"You are a helpful assistant for a camera-based object measurement system. The current unit is {unit}. The user said: '{command}'. How should I respond or act?",
+            max_tokens=100,
+            temperature=0.5
+        )
+        
+        # Get the assistant's response and simplify the action
+        action = response.choices[0].text.strip().lower()
+        print(f"Assistant's Response: {action}")
+        
+        if "change unit" in action:
+            change_unit()
+        elif "measure object" in action:
+            measure_object()
+        elif "show unit options" in action:
+            show_unit_options()
+        else:
+            print("Unrecognized command.")
+        
+        # Send the corresponding command to the Arduino
+        send_command_to_arduino(action)
+    
+    except Exception as e:
+        print(f"Error processing voice command: {e}")
+
+# Function to change the unit of measurement
+def change_unit():
+    global unit
+    unit = "inches" if unit == "cm" else "cm"  # Toggle between cm and inches
+    print(f"Unit changed to {unit}")
+
+# Function to simulate measurement (in a real-world case, this would use depth data)
+def measure_object():
+    print(f"Measuring object in {unit}...")
+    size = 15  # Dummy size
+    if unit == "inches":
+        size = convert_measurement(size, "cm", "inches")
+    print(f"Object size: {size} {unit}")
+
+# Function to convert measurements between units
+def convert_measurement(value, from_unit, to_unit):
+    if from_unit == to_unit:
+        return value
+    if from_unit == "cm" and to_unit == "inches":
+        return value / 2.54
+    if from_unit == "inches" and to_unit == "cm":
+        return value * 2.54
+
+# Function to process the camera feed and detect objects
+def process_camera_feed():
+    global video_frame, depth_frame
+
+    cap = cv2.VideoCapture(0)  # Open camera
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame.")
+            break
+
+        video_frame = frame
+        # Simulate depth frame (replace with actual depth data in real-world scenarios)
+        depth_frame = np.random.random((frame.shape[0], frame.shape[1])) * 1000  # Random depth values
+
+        # Display video feed on HDMI screen
+        cv2.imshow("Camera Feed", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):  # Press 'q' to exit
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+# Main function to run everything
+def main():
+    # Start voice command listener in a separate thread
+    voice_thread = threading.Thread(target=listen_for_commands, daemon=True)
+    voice_thread.start()
+
+    # Start the main UI
+    main_app_ui()
+
+if __name__ == "__main__":
+    main()
