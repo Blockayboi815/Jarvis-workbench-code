@@ -1,0 +1,185 @@
+import cv2
+import numpy as np
+import speech_recognition as sr
+import openai
+import threading
+import os
+import requests
+
+# Set OpenAI API key
+openai.api_key = os.getenv("OPENAI_API_KEY")  # Ensure you have your key in your environment variables
+
+# WiFi details for Arduino
+ARDUINO_IP = "http://<your_arduino_ip>/command"  # Replace with your Arduino's IP
+
+# Global variables
+unit = "cm"  # Default unit (Centimeters)
+depth_frame = None  # Placeholder for depth frame
+video_frame = None  # Placeholder for video frame
+recognizer = sr.Recognizer()  # Initialize speech recognizer
+circle_position = (320, 240)  # Default position for the circle (center of the frame)
+circle_radius = 30  # 1-inch circle (adjust based on your camera resolution)
+
+# Apps state (for enabling/disabling apps)
+apps = {
+    "3D Modeling": False,
+    "Tetris": False,
+    "Scan": False,
+    "Drawing": False,
+    "Voice Command": False,
+    "Home": True,
+}
+
+# Drawing related variables
+drawing = False
+last_point = None
+color = (0, 0, 255)  # Default color (Red)
+
+# Tetris game variables
+# (You'll need to implement the Tetris logic here)
+
+# Function to send a command to the Arduino via HTTP
+def send_command_to_arduino(command):
+    try:
+        response = requests.get(ARDUINO_IP, params={'command': command})
+        print(f"Arduino Response: {response.text}")
+    except Exception as e:
+        print(f"Error sending command to Arduino: {e}")
+
+# Function to detect finger touch inside the circle
+def detect_touch_in_circle(frame, circle_position, circle_radius):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    for contour in contours:
+        M = cv2.moments(contour)
+        if M["m00"] > 0:
+            cX = int(M["m10"] / M["m00"])
+            cY = int(M["m01"] / M["m00"])
+
+            # Check if the touch point is within the circle
+            if (cX - circle_position[0]) ** 2 + (cY - circle_position[1]) ** 2 <= circle_radius ** 2:
+                print("Finger touched the circle!")
+                return True
+    return False
+
+# Function to show apps in grid after touch
+def show_app_grid(frame):
+    app_size = 100
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    positions = [(100, 50), (300, 50), (500, 50), 
+                 (100, 250), (300, 250), (500, 250)]
+
+    for i, (app, pos) in enumerate(zip(apps.keys(), positions)):
+        if apps[app]:
+            cv2.rectangle(frame, (pos[0], pos[1]), (pos[0] + app_size, pos[1] + app_size), (0, 255, 0), -1)
+            cv2.putText(frame, app, (pos[0] + 10, pos[1] + 50), font, 0.5, (255, 255, 255), 2)
+    return frame
+
+# Function for 3D Modeling App
+def open_3d_modeling_app():
+    print("3D Modeling App opened (Placeholder).")
+
+# Function for Tetris App
+def open_tetris_app():
+    print("Tetris App opened (Placeholder).")
+    # Implement basic Tetris game logic here or integrate with an existing Tetris library
+
+# Function for Scan App
+def open_scan_app():
+    print("Scan App opened (Placeholder).")
+    # Implement scanning logic: Detect build area, project blue line, capture image
+
+# Function for Drawing App
+def open_drawing_app(frame):
+    global drawing, last_point, color
+    # Simulating finger drawing on the frame
+    if drawing and last_point is not None:
+        cv2.line(frame, last_point, (circle_position[0], circle_position[1]), color, 5)
+    return frame
+
+# Function for Voice Command App
+def open_voice_command_app():
+    print("Voice Command activated.")
+    # You could restart the voice listener here or trigger actions based on voice input
+
+# Function for Home App
+def open_home_app():
+    print("Home App opened. Returning to home screen with real-time measurements.")
+    # Display real-time measurements of the build area here
+    return None  # Return the frame to its original home state
+
+# Function to process camera feed and detect user interaction
+def process_camera_feed():
+    global video_frame, depth_frame, circle_position, circle_radius, apps, drawing, last_point, color
+
+    cap = cv2.VideoCapture(0)  # Open camera
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame.")
+            break
+
+        video_frame = frame
+        depth_frame = np.random.random((frame.shape[0], frame.shape[1])) * 1000  # Random depth values
+
+        # Draw a 1-inch circle
+        cv2.circle(frame, circle_position, circle_radius, (0, 255, 0), 2)
+
+        # Detect touch in the circle
+        if detect_touch_in_circle(frame, circle_position, circle_radius):
+            frame = show_app_grid(frame)
+
+            # Handle app functionality based on which app is selected
+            if apps["3D Modeling"]:
+                open_3d_modeling_app()
+            elif apps["Tetris"]:
+                open_tetris_app()
+            elif apps["Scan"]:
+                open_scan_app()
+            elif apps["Drawing"]:
+                frame = open_drawing_app(frame)
+            elif apps["Voice Command"]:
+                open_voice_command_app()
+            elif apps["Home"]:
+                frame = open_home_app()
+
+        # Display video feed on HDMI screen
+        cv2.imshow("Camera Feed", frame)
+
+        # Move the OpenCV window to the HDMI screen (if connected as second monitor)
+        cv2.moveWindow("Camera Feed", 1920, 0)  # Example: Move to (1920, 0) for a secondary screen
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):  # Press 'q' to exit
+            break
+        elif key == ord('d'):  # Toggle drawing on and off with 'd'
+            drawing = not drawing
+            if drawing:
+                print("Drawing mode activated.")
+            else:
+                print("Drawing mode deactivated.")
+        elif key == ord('r'):  # Change color to Red with 'r'
+            color = (0, 0, 255)
+        elif key == ord('g'):  # Change color to Green with 'g'
+            color = (0, 255, 0)
+        elif key == ord('b'):  # Change color to Blue with 'b'
+            color = (255, 0, 0)
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+# Main function
+def main():
+    # Start voice command listener in a separate thread
+    voice_thread = threading.Thread(target=listen_for_commands, daemon=True)
+    voice_thread.start()
+
+    # Process the camera feed and object detection
+    process_camera_feed()
+
+if __name__ == "__main__":
+    main()
