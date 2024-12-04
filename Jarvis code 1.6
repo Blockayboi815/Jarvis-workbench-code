@@ -1,0 +1,146 @@
+import cv2
+import numpy as np
+import speech_recognition as sr
+import openai
+import threading
+import os
+import RPi.GPIO as GPIO
+from picamera.array import PiRGBArray
+from picamera import PiCamera
+import tkinter as tk
+from tkinter import messagebox
+
+# Set OpenAI API key
+openai.api_key = os.getenv("OPENAI_API_KEY")  # Ensure you have your key in your environment variables
+
+# Global variables
+unit = "cm"  # Default unit (Centimeters)
+video_frame = None  # Placeholder for video frame
+recognizer = sr.Recognizer()  # Initialize speech recognizer
+
+# GPIO setup
+GPIO.setmode(GPIO.BCM)  # Use BCM numbering for GPIO
+GPIO.setwarnings(False)
+LED_PIN = 18  # Example: Pin 18 for an LED
+GPIO.setup(LED_PIN, GPIO.OUT)
+
+# Function to send a command via GPIO
+def send_command_to_gpio(command):
+    if command == "turn on light":
+        GPIO.output(LED_PIN, GPIO.HIGH)
+        print("LED turned ON")
+    elif command == "turn off light":
+        GPIO.output(LED_PIN, GPIO.LOW)
+        print("LED turned OFF")
+    else:
+        print(f"Unrecognized GPIO command: {command}")
+
+# Function to listen for voice commands
+def listen_for_commands():
+    with sr.Microphone() as source:
+        recognizer.adjust_for_ambient_noise(source)
+        print("Listening for voice commands...")
+
+        while True:
+            audio = recognizer.listen(source)
+            try:
+                command = recognizer.recognize_google(audio).lower()
+                print(f"Command received: {command}")
+                if "hey jarvis" in command:
+                    print("Voice control activated.")
+                    process_voice_command(command)
+            except sr.UnknownValueError:
+                pass
+            except sr.RequestError as e:
+                print(f"Speech recognition error: {e}")
+
+# Function to process voice commands using OpenAI
+def process_voice_command(command):
+    global unit
+    
+    try:
+        # Query OpenAI GPT model for handling commands
+        response = openai.Completion.create(
+            engine="gpt-4",
+            prompt=f"You are a helpful assistant for a camera-based object measurement system. The current unit is {unit}. The user said: '{command}'. How should I respond or act?",
+            max_tokens=100,
+            temperature=0.5
+        )
+        
+        # Get the assistant's response and simplify the action
+        action = response.choices[0].text.strip().lower()
+        print(f"Assistant's Response: {action}")
+        
+        if "change unit" in action:
+            change_unit()
+        elif "measure object" in action:
+            measure_object()
+        elif "turn on light" in action or "turn off light" in action:
+            send_command_to_gpio(action)
+        else:
+            print("Unrecognized command.")
+    
+    except Exception as e:
+        print(f"Error processing voice command: {e}")
+
+# Function to change the unit of measurement
+def change_unit():
+    global unit
+    unit = "inches" if unit == "cm" else "cm"  # Toggle between cm and inches
+    print(f"Unit changed to {unit}")
+
+# Function to simulate measurement
+def measure_object():
+    print(f"Measuring object in {unit}...")
+    size = 15  # Dummy size
+    if unit == "inches":
+        size = convert_measurement(size, "cm", "inches")
+    print(f"Object size: {size} {unit}")
+
+# Function to convert measurements between units
+def convert_measurement(value, from_unit, to_unit):
+    if from_unit == to_unit:
+        return value
+    if from_unit == "cm" and to_unit == "inches":
+        return value / 2.54
+    if from_unit == "inches" and to_unit == "cm":
+        return value * 2.54
+
+# Function to process the camera feed using PiCamera
+def process_camera_feed():
+    global video_frame
+
+    # Initialize PiCamera
+    camera = PiCamera()
+    camera.resolution = (640, 480)  # Lower resolution for performance
+    raw_capture = PiRGBArray(camera, size=(640, 480))
+
+    print("Starting camera feed...")
+    for frame in camera.capture_continuous(raw_capture, format="bgr", use_video_port=True):
+        video_frame = frame.array
+
+        # Display video feed on HDMI screen
+        cv2.imshow("Camera Feed", video_frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        raw_capture.truncate(0)  # Clear the stream for the next frame
+
+        if key == ord('q'):  # Press 'q' to exit
+            break
+
+    cv2.destroyAllWindows()
+
+# Main function to run everything
+def main():
+    # Start voice command listener in a separate thread
+    voice_thread = threading.Thread(target=listen_for_commands, daemon=True)
+    voice_thread.start()
+
+    # Start the camera feed
+    process_camera_feed()
+
+    # Ensure GPIO cleanup on exit
+    GPIO.cleanup()
+
+if __name__ == "__main__":
+    main()
