@@ -1,0 +1,179 @@
+import cv2
+import numpy as np
+import speech_recognition as sr
+import openai
+import threading
+import os
+import RPi.GPIO as GPIO
+from picamera.array import PiRGBArray
+from picamera import PiCamera
+import signal
+import requests
+
+# Set OpenAI API key
+openai.api_key = os.getenv("OPENAI_API_KEY")  # Ensure the key is in environment variables
+
+# Global variables
+unit = "cm"  # Default unit (Centimeters)
+video_frame = None  # Placeholder for video frame
+recognizer = sr.Recognizer()  # Initialize speech recognizer
+stop_program = False  # Flag to handle program exit
+
+# GPIO setup
+GPIO.setmode(GPIO.BCM)  # Use BCM numbering for GPIO
+GPIO.setwarnings(False)
+LED_PIN = 18  # Example: Pin 18 for an LED
+GPIO.setup(LED_PIN, GPIO.OUT)
+
+
+# Function to send a command via GPIO
+def send_command_to_gpio(command):
+    if command == "turn on light":
+        GPIO.output(LED_PIN, GPIO.HIGH)
+        give_feedback("Turning on the light.")
+    elif command == "turn off light":
+        GPIO.output(LED_PIN, GPIO.LOW)
+        give_feedback("Turning off the light.")
+    else:
+        give_feedback("Unrecognized GPIO command.")
+
+
+# Function to provide feedback
+def give_feedback(message):
+    print(message)
+    # Add text-to-speech feedback here if desired, e.g., with pyttsx3
+
+
+# Function to listen for voice commands
+def listen_for_commands():
+    global stop_program
+    with sr.Microphone() as source:
+        recognizer.adjust_for_ambient_noise(source)
+        print("Say 'Hey Jarvis' to activate.")
+        while not stop_program:
+            try:
+                audio = recognizer.listen(source, timeout=10)  # Wait up to 10 seconds for input
+                command = recognizer.recognize_google(audio).lower()
+                if "hey jarvis" in command:
+                    print("Voice control activated.")
+                    give_feedback("How can I help?")
+                    process_voice_command(command)
+            except sr.UnknownValueError:
+                print("Could not understand the command.")
+            except sr.RequestError as e:
+                print(f"Speech recognition error: {e}")
+            except Exception as e:
+                print(f"Unexpected error: {e}")
+
+
+# Function to process voice commands using OpenAI
+def process_voice_command(command):
+    global unit
+    try:
+        response = openai.Completion.create(
+            engine="gpt-4",
+            prompt=f"You are a helpful assistant for a camera-based object measurement system. The current unit is {unit}. The user said: '{command}'. How should I respond or act?",
+            max_tokens=100,
+            temperature=0.5
+        )
+        action = response.choices[0].text.strip().lower()
+        print(f"Assistant's Response: {action}")
+
+        if "change unit" in action:
+            change_unit()
+        elif "measure object" in action:
+            measure_object()
+        elif "turn on light" in action or "turn off light" in action:
+            send_command_to_gpio(action)
+        else:
+            give_feedback("Unrecognized command.")
+    except requests.exceptions.RequestException as e:
+        print(f"Network error: {e}")
+        give_feedback("I couldn't reach the server. Please try again.")
+    except Exception as e:
+        print(f"Error processing voice command: {e}")
+
+
+# Function to change the unit of measurement
+def change_unit():
+    global unit
+    unit = "inches" if unit == "cm" else "cm"  # Toggle between cm and inches
+    give_feedback(f"Unit changed to {unit}")
+
+
+# Function to simulate measurement
+def measure_object():
+    print(f"Measuring object in {unit}...")
+    size = 15  # Dummy size
+    if unit == "inches":
+        size = convert_measurement(size, "cm", "inches")
+    give_feedback(f"Object size: {size:.2f} {unit}")
+
+
+# Function to convert measurements between units
+def convert_measurement(value, from_unit, to_unit):
+    if from_unit == to_unit:
+        return value
+    if from_unit == "cm" and to_unit == "inches":
+        return value / 2.54
+    if from_unit == "inches" and to_unit == "cm":
+        return value * 2.54
+
+
+# Function to process the camera feed using PiCamera
+def process_camera_feed():
+    global video_frame, stop_program
+
+    # Initialize PiCamera
+    camera = PiCamera()
+    camera.resolution = (320, 240)  # Reduced resolution for Pi 3
+    camera.framerate = 15  # Lower frame rate
+    raw_capture = PiRGBArray(camera, size=(320, 240))
+
+    print("Starting camera feed...")
+
+    try:
+        for frame in camera.capture_continuous(raw_capture, format="bgr", use_video_port=True):
+            video_frame = frame.array
+            cv2.imshow("Camera Feed", video_frame)
+
+            key = cv2.waitKey(33) & 0xFF  # 33ms delay (~30 FPS)
+            raw_capture.truncate(0)
+
+            if key == ord('q') or stop_program:
+                stop_program = True
+                break
+    finally:
+        camera.close()
+        cv2.destroyAllWindows()
+
+
+# Signal handler for proper cleanup
+def cleanup(signal_received=None, frame=None):
+    global stop_program
+    print("Cleaning up resources...")
+    stop_program = True
+    GPIO.cleanup()
+    cv2.destroyAllWindows()
+    exit(0)
+
+
+# Main function to run everything
+def main():
+    # Register signal handler for cleanup
+    signal.signal(signal.SIGINT, cleanup)
+
+    # Start voice command listener in a separate thread
+    voice_thread = threading.Thread(target=listen_for_commands, daemon=True)
+    voice_thread.start()
+
+    # Start the camera feed
+    try:
+        process_camera_feed()
+    finally:
+        cleanup()
+
+
+if __name__ == "__main__":
+    main()
+
